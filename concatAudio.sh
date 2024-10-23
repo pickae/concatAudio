@@ -48,6 +48,7 @@ export imageSizeLimit=700000
 export fullHD="1920x1080"
 export quadHD="2560x1440"
 export ultra4K="3840x2160"
+export dpi=300
 export jpgQualityLevel=80
 XARGS() {
 	xargs -r0 "$@"
@@ -250,7 +251,6 @@ cleanNamesCollectively() {
 
     # export to file
     printf "%s\n" "${names[@]}" > "$cleanNames"
-
 }
 
 renameOutputIndividually(){
@@ -537,18 +537,10 @@ timeFromCueString() {
     # so that those can be converted back to the slightly different chapter file time format
 
     # the 10 digits input string is only good for >1000 minute long files
-    # trim leading whitespace when between 100 and 1000 minutes
-    # or when below 10 and minutes and seconds not written out
+    # everything else needs to be trimmed
     local formattedTime=$(echo "$1" | xargs echo -n)
     formattedTime=$(echo $formattedTime|tr -d '\r')
-    # trim manually if <100 minutes
-    if [[ "$formattedTime" == "1 "* ]]; then
-        formattedTime=${formattedTime:2:8}
-    fi
-    # trim manually if <10 minutes and digits not written out
-    if [[ "$formattedTime" == "01 "* ]]; then
-            formattedTime=${formattedTime:3:7}
-    fi
+    formattedTime=${formattedTime#* }
 
     # split into components and compute
     if [[ "$formattedTime" == "00:00:00" || "$formattedTime" == "0:00:00" || "$formattedTime" == "0:0:00" ]]; then
@@ -708,27 +700,33 @@ embedThumbnail() {
     local thumbFile=$(find "$inputPath" -type f -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif')
 
     # refine choice in increasing order of priority, also looking at subfolders now
-    local tempFile=$(find "$inputPath" -type f -iname '*back*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    local tempFile=$(find "$inputPath" -type f -iname '*back*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
-    tempFile=$(find "$inputPath" -type f -iname '*folder*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    tempFile=$(find "$inputPath" -type f -iname '*folder*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
-    tempFile=$(find "$inputPath" -type f -iname '*inlay*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    tempFile=$(find "$inputPath" -type f -iname '*inlay*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -not -iname '*back*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -not -iname '*back*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
-    tempFile=$(find "$inputPath" -type f -iname '*front*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    tempFile=$(find "$inputPath" -type f -iname '*front*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -iname '*front*' -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -iname '*front*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
     if [[ ${#tempFile} -ge 1 ]]; then
         thumbFile="$tempFile"
     fi
@@ -746,7 +744,7 @@ embedThumbnail() {
     if [[ ${#tempPDF} -ge 1 ]]; then
         local pdfFile=$(echo "${tempPDF}" | head -1)
         thumbFile="$fileName"
-        pdftoppm "$pdfFile" "$thumbFile" -jpeg -rx 300 -ry 300 -f 1 -singlefile
+        pdftoppm "$pdfFile" "$thumbFile" -jpeg -rx "$dpi" -ry "$dpi" -f 1 -singlefile
         thumbFile="$thumbFile.jpg"
     fi
 
@@ -852,6 +850,8 @@ mainFunction() {
             concatDone=1
         fi
 
+        # TODO
+        # prepare chapters and thumbnail first so that encoding can be piped, in RAM
         if [[ $concatDone == 1 ]]; then
             # one of two ways to retrieve chapters
             # cue sheets have priority if they exist and are needed because music isn't yet split
@@ -887,8 +887,11 @@ mainFunction() {
 ########
 
 # Prepare Output folder
-mkdir -p "$outputDir" || true
-find "$outputDir" -type f -name '*.ch' -delete
+if [ -d "$outputDir" ]; then 
+    find "$outputDir" -type f -name '*.ch' -delete
+else
+    mkdir -p "$outputDir"
+fi
 
 mainFunction "$inputDir" "$outputDir"
 
