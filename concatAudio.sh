@@ -139,6 +139,10 @@ cleanNamesIndividually() {
     newName=${newName//"“"/}
     newName=${newName//[$'\t\r\n']/}
 
+    # Track01 to Track 01
+    # this makes it easier later to crop the common prefix Track
+    newName=${newName//"Track0"/"Track 0"}
+
     # determine prefix which could be date or number
     # corner case : date plus number, the number will be kept as part of name
     # splitting the prefixes is needed to later cleanup the names across all chapters
@@ -224,12 +228,6 @@ cleanNamesCollectively() {
     # find the longest common suffix, by twice inverting
     local commonSuffix=$(printf "%s\n" "${names[@]}" | rev | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}' | rev)
 
-    # TODO
-    # if names are long, but suffix is empty
-    # try cropping the first 9 names by 1 char
-    # or the first 9 by 2 and the 9-99th by 1
-    # see if then there is a suffix
-
     # leave closing brackets if brackets were opened in name, but not if opening was also trimmed in prefix
     if [[ $commonSuffix == ")"*  && ! $commonPrefix == *"("* ]]; then
         commonSuffix=${commonSuffix:1}
@@ -239,38 +237,15 @@ cleanNamesCollectively() {
     # but not by mangling inside words, meaning
     # prefixes and suffixes that are only letters without spaces are
     # kept (e.g. last, lost, list and not ast, ost, ist)
-    # but removed if the rest is only numbers (e.g. 01, 02 and not Track01, Track02...)
-    local rest=("${names[@]#"$commonPrefix"}")
-    rest=("${rest[@]%"$commonSuffix"}")
-    if [[ $commonPrefix =~ [^a-zA-Z] || "${rest[@]}" =~ [^[:digit:]] ]]; then
+    if [[ $commonPrefix =~ [^a-zA-Z] ]]; then
         names=("${names[@]#"$commonPrefix"}")
     fi
-    if [[ $commonSuffix =~ [^a-zA-Z] || "${rest[@]}" =~ [^[:digit:]] ]]; then
+    if [[ $commonSuffix =~ [^a-zA-Z] ]]; then
         names=("${names[@]%"$commonSuffix"}")
     fi
 
     # export to file
     printf "%s\n" "${names[@]}" > "$cleanNames"
-}
-
-renameOutputIndividually(){
-    #variables
-    local inputDir="$1"
-    local pathFile="$2"
-    local nameFile="$3"
-    local prefixFile="$4"
-
-    # make initial list
-    local dirList=$(find "$inputDir" -maxdepth 1 -mindepth 1 -type d)
-    dirList=$(echo "$dirList" | sort -V)
-    echo "$dirList" >"$pathFile"
-
-    # loop to create prefix and name files
-    cat "$pathFile" | while read dir; do
-        dir=$(basename -- "$dir")
-        # split prefix number if available, clean the name
-        cleanNamesIndividually "$dir" "$prefixFile" "$nameFile"
-    done  
 }
 
 nameOutputFiles() {
@@ -282,9 +257,20 @@ nameOutputFiles() {
     local nameFile="$outputDir/folders.name"
     local prefixFile="$outputDir/folders.prefix"
     local cleanNameFile="$outputDir/folders.cleanname"
+    local cleanerNameFile="$outputDir/folders.cleanername"
 
+    # make initial list
+    local dirList=$(find "$inputDir" -maxdepth 1 -mindepth 1 -type d)
+    dirList=$(echo "$dirList" | sort -V)
+    echo "$dirList" >"$pathFile"
+    
     # first an individual renaming pass to identitfy prefixes
-    renameOutputIndividually "$inputDir" "$pathFile" "$nameFile" "$prefixFile"
+    # loop to create prefix and name files
+    cat "$pathFile" | while read dir; do
+        dir=$(basename -- "$dir")
+        # split prefix number if available, clean the name
+        cleanNamesIndividually "$dir" "$prefixFile" "$nameFile"
+    done
 
     # rename collectively to remove common prefixes and suffixes
     # only applicable for multiple input folders
@@ -298,23 +284,28 @@ nameOutputFiles() {
     # because blocked by common text in front, which is now gone
     local prefix=$(cat "$prefixFile" | head -"1" | tail -1)
     if [[ -z "$prefix" ]]; then
-        renameOutputIndividually "$inputDir" "$pathFile" "$nameFile" "$prefixFile"
+        rm -rf "$prefixFile"
+        cat "$cleanNameFile" | while read cleanName; do
+            cleanNamesIndividually "$cleanName" "$prefixFile" "$cleanerNameFile"
+        done
+    else
+        cp "$cleanNameFile" "$cleanerNameFile"
     fi
 
     # concat clean paths
     local outputFileNumber=1
-    cat "$cleanNameFile" | while read cleanName; do
+    cat "$cleanerNameFile" | while read name; do
         local prefix=$(cat "$prefixFile" | head -"$outputFileNumber" | tail -1)
 
         # folders with dots in the name would not make acceptable filenames
-        cleanName=${cleanName//"."/}
+        name=${name//"."/}
 
         # put prefix only if applicable
         # so that there is no leading space without prefix
         if [[ ${#prefix} > 0 ]]; then
-            local path="$outputDir/$prefix $cleanName"
+            local path="$outputDir/$prefix $name"
         else
-            local path="$outputDir/$cleanName"
+            local path="$outputDir/$name"
         fi
         path=${path//"//"/"/"}
 
@@ -326,6 +317,7 @@ nameOutputFiles() {
     # cleanup
     rm -rf "$nameFile"
     rm -rf "$cleanNameFile"
+    rm -rf "$cleanerNameFile"
     rm -rf "$prefixFile"
 }
 
@@ -449,10 +441,10 @@ chaptersFromFiles() {
 
     # Variables
     local listFile="$1"
-    local tempPrefixFile="$listFile.temp.prefix"
-    local nameFile="$listFile.name"
-    local prefixFile="$listFile.prefix"
-    local cleanNameFile="$listFile.cleanname"
+    local tempPrefixFile="${listFile%.*}.temp.prefix"
+    local nameFile="${listFile%.*}.name"
+    local prefixFile="${listFile%.*}.prefix"
+    local cleanNameFile="${listFile%.*}.cleanname"
     local outputFile="$2"
 
     # First loop to make name files
