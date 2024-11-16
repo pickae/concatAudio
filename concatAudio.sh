@@ -11,7 +11,7 @@ usage="Usage:
     requires per desired output file one subfolder in input
     each subfolder respectively needs to have only mp3, opus or aac audio
     those can be in various recursive folders
-    the naming of those files and folders should reflect the desired order
+    the naming of those files and subfolders should reflect the desired order
 
     Chapters
     --------
@@ -20,13 +20,19 @@ usage="Usage:
 
     Thumbnail
     ---------
-    embed cover from image file(s) or documents
-    fallback: take from audio files themselves"
+    embed cover from image file(s) in input folder
+    fallback: extract from pdf documents instead
+    fallback: extract from audio files themselves
+
+    Dependencies
+    ------------
+    ffmpeg, mkvtoolnix, pdftoppm, imagemagick, wc, mutagen"
 
 OPTIND=1
 
-# dependencies
-# ffmpeg, mkvtoolnix, pdftoppm, imagemagick, wc, mutagen
+# TODO
+# depend a lot less on temp files and do much more in RAM
+# for name files, and also the chapter and thumbnail files
 
 while getopts ":h" opt; do
     case "$opt" in
@@ -139,9 +145,10 @@ cleanNamesIndividually() {
     newName=${newName//"“"/}
     newName=${newName//[$'\t\r\n']/}
 
-    # Track01 to Track 01
-    # this makes it easier later to crop the common prefix Track
-    newName=${newName//"Track0"/"Track 0"}
+    # e.g. Track01 to Track 01
+    # this makes it easier later to crop the common prefix "Track"
+    newName=${newName//"Track"/"Track "}
+    newName=${newName//"Piste"/"Piste "}
 
     # determine prefix which could be date or number
     # corner case : date plus number, the number will be kept as part of name
@@ -196,7 +203,7 @@ cleanNamesIndividually() {
     newName=$(echo "$newName" | sed 's/[_]*$//g')
     newName=$(echo "$newName" | xargs)
 
-    # depending on how the function is called, it either only echoes the name
+    # depending on how the function is called, it either only returns the name
     # or writes the name and prefix to files for further processing
     local writeFiles="${2:-false}"
     if [[ "$writeFiles" = false ]]; then
@@ -228,7 +235,8 @@ cleanNamesCollectively() {
     # find the longest common suffix, by twice inverting
     local commonSuffix=$(printf "%s\n" "${names[@]}" | rev | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}' | rev)
 
-    # leave closing brackets if brackets were opened in name, but not if opening was also trimmed in prefix
+    # leave closing brackets if brackets were opened in name
+    # but not if opening was also trimmed in prefix
     if [[ $commonSuffix == ")"*  && ! $commonPrefix == *"("* ]]; then
         commonSuffix=${commonSuffix:1}
     fi
@@ -552,6 +560,7 @@ timeFromCueString() {
         local length=$((minutes * 60 * 1000 + seconds * 1000 + centiseconds * 10))       
     fi
 
+    # return
     echo "$length"
 }
 
@@ -678,6 +687,94 @@ embedChapters() {
     rm -rf "$mkaFile"
 }
 
+chooseThumbnail() {
+    
+    # Variables
+    local inputPath="$1"
+    local fileName="$2"
+
+    # first take any file in folder as potential thumbnail
+    local tempThumb=$(find "$inputPath" -type f -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif')
+
+    # refine choice in increasing order of priority
+    local tempFile=$(find "$inputPath" -type f -iname '*back*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempFile=$(find "$inputPath" -type f -iname '*folder*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempFile=$(find "$inputPath" -type f -iname '*inlay*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -not -iname '*back*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempFile=$(find "$inputPath" -type f -iname '*front*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -iname '*front*' \
+        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
+    if [[ ${#tempFile} -ge 1 ]]; then
+        tempThumb="$tempFile"
+    fi
+    tempThumb=$(echo "${tempThumb}" | head -1)
+
+    # return
+    echo "$tempThumb"
+}
+
+extractThumbnail() {
+
+    # Variables
+    local inputPath="$1"
+    local fileName="$2"
+
+    # choose pdf to extract from
+    local tempPDF=""
+    tempPDF=$(find "$inputPath" -type f -iname '*scan*' -a -iname '*.pdf')
+    if [[ ! ${#tempPDF} -ge 1 ]]; then
+        tempPDF=$(find "$inputPath" -type f -iname '*booklet*' -a -iname '*.pdf')
+    fi
+
+    # if a pdf was found, extract first page
+    if [[ ${#tempPDF} -ge 1 ]]; then
+        local pdfFile=$(echo "${tempPDF}" | head -1)
+        pdftoppm "$pdfFile" "$fileName" -jpeg -rx "$dpi" -ry "$dpi" -f 1 -singlefile
+    
+    else
+    # or extract from the audio files, if nothing was found till now
+    # see if we have mp3 or opus files, extractions is different
+        local sourceOpus=$(find "$inputPath" -type f -iname '*.opus')
+        sourceOpus=$(echo "${sourceOpus}" | head -1)
+        local sourceMp3=$(find "$inputPath" -type f -iname '*.mp3')
+        sourceMp3=$(echo "${sourceMp3}" | head -1)
+
+        # take any opus file, assume they all have the thumbnail embedded
+        if [[ ${#sourceOpus} -ge 1 ]]; then
+            # detour over mka for extractability
+            local tempFile="$outputDir/${sourceOpus##*/}"
+            tempFile="${tempFile%.*}.mka"
+            mkvmerge "$sourceOpus" -o "$tempFile"
+            mkvextract "$tempFile" attachments 1:"$fileName.jpg" || true
+            rm -rf "$tempFile"
+        # or take any mp3 file, assume they all have the thumbnail embedded
+        elif [[ ${#sourceMp3} -ge 1 ]]; then
+            ffmpeg -i "$sourceMp3" -an -vcodec copy "$fileName.jpg" || true
+        # TODO m4a
+        fi
+    fi
+}
+
 embedThumbnail() {
 
     # Variables
@@ -688,87 +785,20 @@ embedThumbnail() {
     local m4bFile="$fileName.m4b"
     local m4bTempFile="$fileName.temp.m4b"
 
-    # find thumbnail, first take any file in folder
-    local thumbFile=$(find "$inputPath" -type f -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif')
+    # choose thumbnail from image or pdf files in input folder
+    local thumbFile=$(chooseThumbnail "$inputPath" "$fileName")
 
-    # refine choice in increasing order of priority, also looking at subfolders now
-    local tempFile=$(find "$inputPath" -type f -iname '*back*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*folder*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*inlay*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -not -iname '*back*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*front*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -iname '*front*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        thumbFile="$tempFile"
-    fi
-    thumbFile=$(echo "${thumbFile}" | head -1)
-
-    # or extract from pdf, if nothing was found till now
-    local tempPDF=""
-    if [[ ! ${#thumbFile} -ge 1 ]]; then
-        tempPDF=$(find "$inputPath" -type f -iname '*scan*' -a -iname '*.pdf')
-        if [[ ! ${#tempPDF} -ge 1 ]]; then
-            tempPDF=$(find "$inputPath" -type f -iname '*booklet*' -a -iname '*.pdf')
-        fi
-    fi
-    # if a pdf was found, extract first page
-    if [[ ${#tempPDF} -ge 1 ]]; then
-        local pdfFile=$(echo "${tempPDF}" | head -1)
-        thumbFile="$fileName"
-        pdftoppm "$pdfFile" "$thumbFile" -jpeg -rx "$dpi" -ry "$dpi" -f 1 -singlefile
-        thumbFile="$thumbFile.jpg"
+    # or extract from audio file themselves, if nothing was found till now
+    if [[ ! -f "$thumbFile" ]]; then
+        extractThumbnail "$inputPath" "$fileName"
+        local thumbFile="$fileName.jpg"
     fi
 
-    # or extract from audio file itself, if nothing was found till now
-    if [[ ! ${#thumbFile} -ge 1 ]]; then
-        # see if we have mp3 or opus files, extractions is different
-        local sourceOpus=$(find "$inputPath" -type f -iname '*.opus')
-        sourceOpus=$(echo "${sourceOpus}" | head -1)
-        local sourceMp3=$(find "$inputPath" -type f -iname '*.mp3')
-        sourceMp3=$(echo "${sourceMp3}" | head -1)
-        thumbFile="$fileName.jpg"
-
-        # take any opus file, assume they all have the thumbnail embedded
-        if [[ ${#sourceOpus} -ge 1 ]]; then
-            # detour over mka for extractability
-            tempFile="$outputDir/${sourceOpus##*/}"
-            tempFile="${tempFile%.*}.mka"
-            mkvmerge "$sourceOpus" -o "$tempFile"
-            mkvextract "$tempFile" attachments 1:"$thumbFile" ||
-                echo "No thumbnail in the files to extract either"
-            rm -rf "$tempFile"
-        # or take any mp3 file, assume they all have the thumbnail embedded
-        elif [[ ${#sourceMp3} -ge 1 ]]; then
-            ffmpeg -i "$sourceMp3" -an -vcodec copy "$thumbFile" ||
-                echo "No thumbnail in the files to extract either"
-        # TODO m4a
-        fi
-    fi
-
-    # rename just in case it's already in that folder (if extracted from audio file), because convert cannot overwrite in place
+    # rename just in case it's already in that folder (if extracted from audio file)
+    # because convert cannot overwrite in place
     local outputThumb="$outputDir/${thumbFile##*/}"
-    outputThumb="${outputThumb%/}output.jpg"
+    outputThumb="${outputThumb%.*}.output.jpg"
+    outputThumb=${outputThumb//"//"/"/"}
 
     # convert if too large or wrong format
     if [[ -f "$thumbFile" ]]; then
@@ -781,22 +811,25 @@ embedThumbnail() {
     fi
 
     # embed thumbnail if applicable
-    if [[ -f "$opusFile" && -f "$outputThumb" ]]; then
-        python3 "$scriptDir/mutagenScript.py" "$opusFile" "$outputThumb"
-        rm -rf "$outputThumb"
-    elif [[ -f "$mp3File" && -f "$outputThumb" ]]; then
-        local mp3TempFile="${mp3File%.*}.temp.mp3"
-        ffmpeg -i "$mp3File" -i "$outputThumb" -c copy -map 0 -map 1 "$mp3TempFile"
-        rm -rf "$mp3File"
-        rm -rf "$outputThumb"
-        mv -f "$mp3TempFile" "$mp3File"
-    elif [[ -f "$m4bFile" && -f "$outputThumb" ]]; then
-        ffmpeg -i "$m4bFile" -i "$outputThumb" -c copy -disposition:v:0 attached_pic "$m4bTempFile"
-        rm -rf "$m4bFile"
-        rm -rf "$outputThumb"
-        mv -f "$m4bTempFile" "$m4bFile"
+    if [[ -f "$outputThumb" ]]; then
+        if [[ -f "$opusFile" ]]; then
+            python3 "$scriptDir/mutagenScript.py" "$opusFile" "$outputThumb"
+            rm -rf "$outputThumb"
+        elif [[ -f "$mp3File" ]]; then
+            local mp3TempFile="${mp3File%.*}.temp.mp3"
+            ffmpeg -i "$mp3File" -i "$outputThumb" \
+                -c copy -map 0 -map 1 "$mp3TempFile"
+            rm -rf "$mp3File"
+            rm -rf "$outputThumb"
+            mv -f "$mp3TempFile" "$mp3File"
+        elif [[ -f "$m4bFile" ]]; then
+            ffmpeg -i "$m4bFile" -i "$outputThumb" \
+                -c copy -disposition:v:0 attached_pic "$m4bTempFile"
+            rm -rf "$m4bFile"
+            rm -rf "$outputThumb"
+            mv -f "$m4bTempFile" "$m4bFile"
+        fi
     fi
-    find "$outputDir" -type f -name '*.jpg' -delete
 }
 
 mainFunction() {
@@ -831,6 +864,7 @@ mainFunction() {
         m4aFiles=($(find "$inputPath" -type f -name "*.aac" -printf x | wc -c))
         concatDone=0
 
+        # concat
         if  ([[ $mp3Files -gt 0 && $opusFiles -eq 0 && $m4aFiles -eq 0 ]]); then
             concatMp3 "$inputPath" "$outputPath" "$listFile"
             concatDone=1
@@ -842,8 +876,6 @@ mainFunction() {
             concatDone=1
         fi
 
-        # TODO
-        # prepare chapters and thumbnail first so that encoding can be piped, in RAM
         if [[ $concatDone == 1 ]]; then
             # one of two ways to retrieve chapters
             # cue sheets have priority if they exist and are needed because music isn't yet split
@@ -851,12 +883,13 @@ mainFunction() {
             ((audioFiles = $mp3Files + $opusFiles + $m4aFiles))
 
             if [[ ${#cueFiles} -ge 1 && $audioFiles == 1 ]]; then
-                # if there is only one audio file
-                # match if with whatever cue, they will be the same anyway
+                # if there is only one audio file and a cue sheet
+                # take the chapters from any cue sheet in the folder
+                # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
                 chaptersFromCue "$cueFile" "$chapterFile"
             else
-                # else ignore cue files, the audio files are the chapters
+                # else the audio files are the chapters
                 chaptersFromFiles "$listFile" "$chapterFile" 
                 rm -rf "$listFile"
             fi
@@ -888,5 +921,6 @@ fi
 mainFunction "$inputDir" "$outputDir"
 
 # Cleanup
-find "$outputDir" -type d -empty -delete
 find "$outputDir" -type f -name '*.ls' -delete
+find "$outputDir" -type f -name '*.jpg' -delete
+find "$outputDir" -type d -empty -delete
