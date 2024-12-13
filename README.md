@@ -14,29 +14,35 @@ Usage:
 Default behavior
 ================
 requires per desired output file one subfolder in input
+
 each subfolder respectively needs to have only mp3, opus or aac audio
+
 those can be in various recursive folders
+
 the naming of those files and subfolders should reflect the desired order
 
 Chapters
 --------
 priority: retrieve chapters from cue file
+
 fallback: concat files and build chapters from individual files
 
 Thumbnail
 ---------
 priority: embed cover from image file(s) in input folder
+
 fallback: extract from pdf documents instead
+
 fallback: extract from audio files themselves
 
 Dependencies
 ============
-ffmpeg
-mkvtoolnix
-pdftoppm
-imagemagick
-wc
-mutagen
+- ffmpeg
+- mkvtoolnix
+- pdftoppm
+- imagemagick
+- wc
+- mutagen
 
 Todo List
 =========
