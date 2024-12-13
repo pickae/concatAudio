@@ -9,7 +9,7 @@ The typical audio formats support this, but it turned out no software could do i
 I found myself executing the same couple of terminal commands all the time and decided to make this script.
 
 Usage:
-./concatAudio <inputDir> <outputDir>
+./concatAudio inputDir outputDir
     
 Default behavior
 ================
