@@ -75,6 +75,7 @@ cleanInputPath() {
     local newName="$1"
     newName=${newName//"_"/ }
     newName=${newName//"'"/}
+    newName=${newName//"!"/}
     newName=${newName//"\`"/}
 
     # remove double spaces and trailing spaces
@@ -87,23 +88,31 @@ pretreatInput() {
     # as little interference as possible
 
     # folders
-    local folderName=$(cleanInputPath "$inputDir/$1")
-    if [[ "$inputDir/$1" != "$folderName" ]]; then
-        mv -f "$inputDir/$1" "$folderName"
-    fi
-    cd "$folderName"
-
-    # relevant audio files
-    shopt -s nullglob
-    for file in *.opus *.mp3 *. m4a *.m4b *.aac; do
-        local fileName=$(cleanInputPath "$file")
-        if [[ "$file" != "$fileName" ]]; then
-            mv -f "$file" "$fileName"
-        fi
+    # breadth first cleanup, if multiple levels need cleanup
+    maxDepth=$(find "$inputDir" -type d -printf '%d\n' | sort -rn | head -1)
+    for (( depth=1; depth<=$maxDepth; depth++ ))
+    do
+        find "$inputDir" -maxdepth "$depth" -mindepth "$depth" -type d -print |
+        while IFS= read folder; do
+            local cleanFolder=$(cleanInputPath "$folder")
+            if [[ "$folder" != "$cleanFolder" ]]; then
+                mv -f "$folder" "$cleanFolder"
+            fi
+        done
     done
 
+    # relevant audio files
+    find "$inputDir" -type f \( -iname '*.opus' -o -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.m4b' -o -iname '*.aac' \) -print |
+        while IFS= read file; do
+            local fileName=$(cleanInputPath "$file")
+            if [[ "$file" != "$fileName" ]]; then
+                echo "$file"
+                mv -f "$file" "$fileName"
+            fi
+        done
+
     # lower case extensions
-    find "$folderName" -type f -print |
+    find "$inputDir" -type f -print |
         while IFS= read file; do
             local fileName="${file%.*}"
             local ending="${file##*.}"
@@ -114,18 +123,21 @@ pretreatInput() {
         done
 
     # extension types
-    for file in *.m4b; do
-        mv -f "$file" "${file%.*}.m4a"
-    done
-    for file in *.m4a; do
-        local outputAAC="${file%.*}.aac"
-        if [[ ! -f "$outputAAC" ]]; then
-            ffmpeg -i "$file" -acodec copy "$outputAAC"
-        fi
-    done
-    for file in *.jpeg; do
-        mv -f "$file" "${file%.*}.jpg"
-    done
+    find "$inputDir" -type f -iname '*.m4b' -print |
+        while IFS= read file; do
+            mv -f "$file" "${file%.*}.m4a"
+        done
+    find "$inputDir" -type f -iname '*.m4a' -print |
+        while IFS= read file; do
+            local outputAAC="${file%.*}.aac"
+            if [[ ! -f "$outputAAC" ]]; then
+                ffmpeg -i "$file" -acodec copy "$outputAAC"
+            fi
+        done
+    find "$inputDir" -type f -iname '*.jpeg' -print |
+        while IFS= read file; do
+            mv -f "$file" "${file%.*}.jpg"
+        done
 }
 
 cleanNamesIndividually() {
