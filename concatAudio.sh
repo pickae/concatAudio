@@ -893,21 +893,26 @@ mainFunction() {
             cueFiles=$(find "$inputPath" -type f -iname '*.cue')
             ((audioFiles = $mp3Files + $opusFiles + $m4aFiles))
 
+            chaptersNeeded=0
             if [[ ${#cueFiles} -ge 1 && $audioFiles == 1 ]]; then
                 # if there is only one audio file and a cue sheet
                 # take the chapters from any cue sheet in the folder
                 # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
                 chaptersFromCue "$cueFile" "$chapterFile"
-            else
+                chaptersNeeded=1
+            elif [[ $audioFiles -ge 2 ]]; then
                 # else the audio files are the chapters
-                chaptersFromFiles "$listFile" "$chapterFile" 
+                chaptersFromFiles "$listFile" "$chapterFile"
                 rm -rf "$listFile"
+                chaptersNeeded=1
             fi
 
             # make pretty
-            embedChapters "$chapterFile"
-            rm -rf "$chapterFile"
+            if [[ $chaptersNeeded == 1 ]]; then
+                embedChapters "$chapterFile"
+                rm -rf "$chapterFile"
+            fi
             embedThumbnail "$inputPath" "$outputPath"
         fi
 
