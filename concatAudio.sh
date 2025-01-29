@@ -106,7 +106,6 @@ pretreatInput() {
         while IFS= read file; do
             local fileName=$(cleanInputPath "$file")
             if [[ "$file" != "$fileName" ]]; then
-                echo "$file"
                 mv -f "$file" "$fileName"
             fi
         done
@@ -776,7 +775,7 @@ extractThumbnail() {
             # detour over mka for extractability
             local tempFile="$outputDir/${sourceOpus##*/}"
             tempFile="${tempFile%.*}.mka"
-            mkvmerge "$sourceOpus" -o "$tempFile"
+            mkvmerge -o "$tempFile" --no-chapters "$sourceOpus"
             mkvextract "$tempFile" attachments 1:"$fileName.jpg" || true
             rm -rf "$tempFile"
         # or take any mp3 file, assume they all have the thumbnail embedded
@@ -797,10 +796,10 @@ embedThumbnail() {
     local m4bFile="$fileName.m4b"
     local m4bTempFile="$fileName.temp.m4b"
 
-    # choose thumbnail from image or pdf files in input folder
+    # choose thumbnail from image file
     local thumbFile=$(chooseThumbnail "$inputPath" "$fileName")
 
-    # or extract from audio file themselves, if nothing was found till now
+    # or extract from pdf file or audio file themselves, if nothing was found till now
     if [[ ! -f "$thumbFile" ]]; then
         extractThumbnail "$inputPath" "$fileName"
         local thumbFile="$fileName.jpg"
