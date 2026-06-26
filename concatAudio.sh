@@ -873,6 +873,7 @@ mainFunction() {
         mp3Files=($(find "$inputPath" -type f -name "*.mp3" -printf x | wc -c))
         opusFiles=($(find "$inputPath" -type f -name "*.opus" -printf x | wc -c))
         m4aFiles=($(find "$inputPath" -type f -name "*.aac" -printf x | wc -c))
+        cueFiles=$(find "$inputPath" -type f -iname '*.cue')
         concatDone=0
 
         # concat
@@ -888,11 +889,11 @@ mainFunction() {
         fi
 
         if [[ $concatDone == 1 ]]; then
-            # one of two ways to retrieve chapters
-            # cue sheets have priority if they exist and are needed because music isn't yet split
-            cueFiles=$(find "$inputPath" -type f -iname '*.cue')
+            
             ((audioFiles = $mp3Files + $opusFiles + $m4aFiles))
 
+            # one of two ways to retrieve chapters
+            # cue sheets have priority if they exist and are needed because music isn't yet split
             chaptersNeeded=0
             if [[ ${#cueFiles} -ge 1 && $audioFiles == 1 ]]; then
                 # if there is only one audio file and a cue sheet
@@ -900,6 +901,7 @@ mainFunction() {
                 # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
                 chaptersFromCue "$cueFile" "$chapterFile"
+                echo "now here"
                 chaptersNeeded=1
             elif [[ $audioFiles -ge 2 ]]; then
                 # else the audio files are the chapters
