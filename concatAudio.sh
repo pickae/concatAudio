@@ -60,6 +60,15 @@ XARGS() {
 	xargs -r0 "$@"
 }
 
+# in-memory replacements for the former temporary list files
+# these hold what used to be written line by line to text files
+INPUT_PATHS=()
+OUTPUT_PATHS=()
+CONCAT_LIST=()
+CHAPTER_LINES=()
+RET_PREFIX=""
+RET_NAME=""
+
 
 # Validate input
 if [ "$#" -lt 2 ]; then
@@ -214,27 +223,23 @@ cleanNamesIndividually() {
     newName=$(echo "$newName" | sed 's/[_]*$//g')
     newName=$(echo "$newName" | xargs)
 
-    # depending on how the function is called, it either only returns the name
-    # or writes the name and prefix to files for further processing
-    local writeFiles="${2:-false}"
-    if [[ "$writeFiles" = false ]]; then
-        echo "$newName"
-    else
-        echo "$prefix" >>"$2"
-        echo "$newName" >>"$3"
-    fi
+    # return the cleaned name and detected prefix in memory
+    # callers read these global variables instead of reading text files
+    RET_PREFIX="$prefix"
+    RET_NAME="$newName"
 }
 
 cleanNamesCollectively() {
     # TODO : case insensitive
-    
-    # assign fileread to array variable
-    local names
-    readarray -t names < "$1"
-    local cleanNames="$2"
+
+    # operate on in-memory arrays passed by name
+    # $1 : name of the input array, $2 : name of the output array
+    local -n __src="$1"
+    local -n __dst="$2"
+    local _items=("${__src[@]}")
 
     # find the longest common prefix
-    local commonPrefix=$(printf "%s\n" "${names[@]}" | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}')
+    local commonPrefix=$(printf "%s\n" "${_items[@]}" | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}')
     # but not numbers that may happen to be in common
     # so that 11 and 12 don't become 1 and 2
     commonPrefix=$(echo "$commonPrefix" | sed 's/[0-9]\+$//')
@@ -244,100 +249,100 @@ cleanNamesCollectively() {
     fi
 
     # find the longest common suffix, by twice inverting
-    local commonSuffix=$(printf "%s\n" "${names[@]}" | rev | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}' | rev)
+    local commonSuffix=$(printf "%s\n" "${_items[@]}" | rev | sed -e '$!{N;s/^\(.*\).*\n\1.*$/\1\n\1/;D;}' | rev)
 
     # leave closing brackets if brackets were opened in name
     # but not if opening was also trimmed in prefix
     if [[ $commonSuffix == ")"*  && ! $commonPrefix == *"("* ]]; then
         commonSuffix=${commonSuffix:1}
     fi
-    
+
     # remove prefix and suffix
     # but not by mangling inside words, meaning
     # prefixes and suffixes that are only letters without spaces are
     # kept (e.g. last, lost, list and not ast, ost, ist)
     if [[ $commonPrefix =~ [^a-zA-Z] ]]; then
-        names=("${names[@]#"$commonPrefix"}")
+        _items=("${_items[@]#"$commonPrefix"}")
     fi
     if [[ $commonSuffix =~ [^a-zA-Z] ]]; then
-        names=("${names[@]%"$commonSuffix"}")
+        _items=("${_items[@]%"$commonSuffix"}")
     fi
 
-    # export to file
-    printf "%s\n" "${names[@]}" > "$cleanNames"
+    # export to output array
+    __dst=("${_items[@]}")
 }
 
 nameOutputFiles() {
     # Variables
     local inputDir="$1"
     local dirNumber=($(find "$inputDir" -maxdepth 1 -mindepth 1 -type d -printf x | wc -c))
-    local pathFile="$2"
-    local cleanPathFile="$3"
-    local nameFile="$outputDir/folders.name"
-    local prefixFile="$outputDir/folders.prefix"
-    local cleanNameFile="$outputDir/folders.cleanname"
-    local cleanerNameFile="$outputDir/folders.cleanername"
 
-    # make initial list
-    local dirList=$(find "$inputDir" -maxdepth 1 -mindepth 1 -type d)
-    dirList=$(echo "$dirList" | sort -V)
-    echo "$dirList" >"$pathFile"
-    
+    # make initial list (kept in memory instead of a path file)
+    local dirList
+    readarray -t dirList < <(find "$inputDir" -maxdepth 1 -mindepth 1 -type d | sort -V)
+    INPUT_PATHS=("${dirList[@]}")
+
     # first an individual renaming pass to identitfy prefixes
-    # loop to create prefix and name files
-    cat "$pathFile" | while read dir; do
+    # loop to build prefix and name lists in memory
+    local prefixes=()
+    local names=()
+    local dir
+    for dir in "${dirList[@]}"; do
         dir=$(basename -- "$dir")
         # split prefix number if available, clean the name
-        cleanNamesIndividually "$dir" "$prefixFile" "$nameFile"
+        cleanNamesIndividually "$dir"
+        prefixes+=("$RET_PREFIX")
+        names+=("$RET_NAME")
     done
 
     # rename collectively to remove common prefixes and suffixes
     # only applicable for multiple input folders
+    local cleanNames=()
     if  [[ $dirNumber -gt 1 ]]; then
-        cleanNamesCollectively "$nameFile" "$cleanNameFile"
+        cleanNamesCollectively names cleanNames
     else
-        cp "$nameFile" "$cleanNameFile"
+        cleanNames=("${names[@]}")
     fi
 
     # if no prefixes were removed individually, they could still be there
     # because blocked by common text in front, which is now gone
-    local prefix=$(cat "$prefixFile" | head -"1" | tail -1)
-    if [[ -z "$prefix" ]]; then
-        rm -rf "$prefixFile"
-        cat "$cleanNameFile" | while read cleanName; do
-            cleanNamesIndividually "$cleanName" "$prefixFile" "$cleanerNameFile"
+    local cleanerNames=()
+    if [[ -z "${prefixes[0]:-}" ]]; then
+        prefixes=()
+        local cleanName
+        for cleanName in "${cleanNames[@]}"; do
+            cleanNamesIndividually "$cleanName"
+            prefixes+=("$RET_PREFIX")
+            cleanerNames+=("$RET_NAME")
         done
     else
-        cp "$cleanNameFile" "$cleanerNameFile"
+        cleanerNames=("${cleanNames[@]}")
     fi
 
     # concat clean paths
+    OUTPUT_PATHS=()
     local outputFileNumber=1
-    cat "$cleanerNameFile" | while read name; do
-        local prefix=$(cat "$prefixFile" | head -"$outputFileNumber" | tail -1)
+    local name
+    for name in "${cleanerNames[@]}"; do
+        local prefix="${prefixes[outputFileNumber-1]}"
 
         # folders with dots in the name would not make acceptable filenames
         name=${name//"."/}
 
         # put prefix only if applicable
         # so that there is no leading space without prefix
+        local path
         if [[ ${#prefix} > 0 ]]; then
-            local path="$outputDir/$prefix $name"
+            path="$outputDir/$prefix $name"
         else
-            local path="$outputDir/$name"
+            path="$outputDir/$name"
         fi
         path=${path//"//"/"/"}
 
-        echo "$path" >>"$cleanPathFile"
+        OUTPUT_PATHS+=("$path")
 
         ((outputFileNumber = outputFileNumber + 1))
     done
-
-    # cleanup
-    rm -rf "$nameFile"
-    rm -rf "$cleanNameFile"
-    rm -rf "$cleanerNameFile"
-    rm -rf "$prefixFile"
 }
 
 concatM4a() {
@@ -346,7 +351,6 @@ concatM4a() {
     # Variables
     local inputFolder="$1"
     local fileBaseName="$2"
-    local listFile="$3"
     local outputFile="$fileBaseName.m4b"
     local tempAAC="$fileBaseName.aac"
     local fileList=$(find "$inputFolder" -maxdepth 1 -type f -iname '*.aac')
@@ -369,7 +373,6 @@ concatMp3() {
     local inputFolder="$1"
     local fileBaseName="$2"
     local outputFile="$fileBaseName.mp3"
-    local listFile="$3"
     local fileList=$(find "$inputFolder" -type f -iname '*.mp3' -exec echo "file '{}'" \;)
 
     # concat all mp3 files
@@ -377,9 +380,12 @@ concatMp3() {
 
         # natural sorting, e.g. 11 after 2
         fileList=$(echo "$fileList" | sort -V)
-        echo "$fileList" >"$listFile"
-        
-        ffmpeg -safe 0 -f concat -i "$listFile" -codec copy "$outputFile"
+
+        # keep the concat list in memory (CONCAT_LIST) instead of a list file
+        readarray -t CONCAT_LIST <<< "$fileList"
+
+        # feed the list to ffmpeg via process substitution (no temp file)
+        ffmpeg -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
     fi
 }
 
@@ -388,7 +394,6 @@ concatOpus() {
     local inputFolder="$1"
     local fileBaseName="$2"
     local outputFile="$fileBaseName.opus"
-    local listFile="$3"
     local fileList=$(find "$inputFolder" -type f -iname '*.opus' -exec echo "file '{}'" \;)
 
     # concat all opus files
@@ -397,8 +402,11 @@ concatOpus() {
         # natural sorting, e.g. 11 after 2
         fileList=$(echo "$fileList" | sort -V)
 
-        echo "$fileList" >"$listFile"
-        ffmpeg -safe 0 -f concat -i "$listFile" -codec copy "$outputFile"
+        # keep the concat list in memory (CONCAT_LIST) instead of a list file
+        readarray -t CONCAT_LIST <<< "$fileList"
+
+        # feed the list to ffmpeg via process substitution (no temp file)
+        ffmpeg -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
     fi
 }
 
@@ -407,10 +415,9 @@ timeRow() {
     # CHAPTER01=00:00:00.000
 
     # Variables
-    local outPutFile="$1"
-    local chapterNumber="$2"
+    local chapterNumber="$1"
     printf -v paddedChapterNumber "%02d" $chapterNumber
-    length=$3
+    length=$2
 
     # format from milliseconds to string
     local hours=$((length / 3600000))
@@ -423,9 +430,8 @@ timeRow() {
     printf -v milliseconds "%03d" $milliseconds
     local timeStamp="$hours:$minutes:$seconds.$milliseconds"
 
-    # print
-    echo -n "CHAPTER$paddedChapterNumber=" >>"$outPutFile"
-    echo "$timeStamp" >>"$outPutFile"
+    # append to the in-memory chapter list
+    CHAPTER_LINES+=("CHAPTER$paddedChapterNumber=$timeStamp")
 }
 
 nameRow() {
@@ -433,23 +439,20 @@ nameRow() {
     # CHAPTER01NAME=Intro
 
     # Variables
-    local outPutFile="$1"
-    local chapterNumber="$2"
+    local chapterNumber="$1"
     printf -v paddedChapterNumber "%02d" $chapterNumber
-    local chapterName="$3"
+    local chapterName="$2"
 
-    # print
-    echo -n "CHAPTER$paddedChapterNumber" >>"$outPutFile"
-    echo -n "NAME=" >>"$outPutFile"
-    echo "$chapterName" >>"$outPutFile"
+    # append to the in-memory chapter list
+    CHAPTER_LINES+=("CHAPTER${paddedChapterNumber}NAME=$chapterName")
 }
 
 chaptersFromFiles() {
-    # takes as input file list
-    # same file as ffmpeg used to concat the files
+    # takes as input the in-memory concat list (CONCAT_LIST)
+    # same list ffmpeg used to concat the files
     # which makes sure the order of the chapters always corresponds to the concatenation
-    
-    # outputs chapter files in ogm format
+
+    # builds the chapters in memory (CHAPTER_LINES) in ogm format
     # https://github.com/fireattack/chapter_converter
     # CHAPTER01=00:00:00.000
     # CHAPTER01NAME=Intro
@@ -458,31 +461,33 @@ chaptersFromFiles() {
     # CHAPTER03=00:07:34.000
     # CHAPTER03NAME=Outro
 
-    # Variables
-    local listFile="$1"
-    local tempPrefixFile="${listFile%.*}.temp.prefix"
-    local nameFile="${listFile%.*}.name"
-    local prefixFile="${listFile%.*}.prefix"
-    local cleanNameFile="${listFile%.*}.cleanname"
-    local outputFile="$2"
+    # start with a fresh chapter list
+    CHAPTER_LINES=()
 
-    # First loop to make name files
-    cat "$listFile" | while read file; do
+    # First loop to make name lists in memory
+    local names=()
+    local tempPrefixes=()
+    local file
+    for file in "${CONCAT_LIST[@]}"; do
         # format
         file=${file//"file "/}
         file=$(echo "$file" | tr -d "'")
         file=$(basename -- "$file")
 
-        # write rows
-        cleanNamesIndividually "${file%.*}" "$tempPrefixFile" "$nameFile"
+        # collect name and prefix
+        cleanNamesIndividually "${file%.*}"
+        tempPrefixes+=("$RET_PREFIX")
+        names+=("$RET_NAME")
     done
 
     # Clean chapter names as seen collectively
     # Anything that is leading or trailing all names is removed
-    cleanNamesCollectively "$nameFile" "$cleanNameFile"
+    local cleanNames=()
+    cleanNamesCollectively names cleanNames
     # prefixes could also be all the same number
     # in which case they should be seen as if no prefixes were removed
-    cleanNamesCollectively "$tempPrefixFile" "$prefixFile"
+    local prefixes=()
+    cleanNamesCollectively tempPrefixes prefixes
 
     # Second loop to write the chapter
     # cannot be done in one loop because one chapter's name can depend on the other chapters
@@ -491,12 +496,12 @@ chaptersFromFiles() {
     local chapterNumber=1
     # initialize cumulative length
     local accumulatedLength=0
-    cat "$listFile" | while read file; do
+    for file in "${CONCAT_LIST[@]}"; do
         # Variables
         file=${file//"file "/}
         file=$(echo "$file" | tr -d "'")
-        cleanName=$(cat "$cleanNameFile" | head -"$chapterNumber" | tail -1)
-        prefix=$(cat "$prefixFile" | head -"$chapterNumber" | tail -1)
+        cleanName="${cleanNames[chapterNumber-1]}"
+        prefix="${prefixes[chapterNumber-1]}"
 
         # if no prefixes were removed individually
         # or if the "prefixes" were all the same number
@@ -504,7 +509,8 @@ chaptersFromFiles() {
         # because blocked by common text in front, which is now gone
         # remove them, but only if something remains of the name
         if [[ -z "$prefix" ]]; then
-            tempName=$(cleanNamesIndividually "$cleanName")
+            cleanNamesIndividually "$cleanName"
+            tempName="$RET_NAME"
             if [[ ! -z "$tempName" ]]; then
                 cleanName="$tempName"
             fi
@@ -522,8 +528,8 @@ chaptersFromFiles() {
         fi
 
         # write rows
-        timeRow "$outputFile" "$chapterNumber" "$accumulatedLength"
-        nameRow "$outputFile" "$chapterNumber" "$chapterName"
+        timeRow "$chapterNumber" "$accumulatedLength"
+        nameRow "$chapterNumber" "$chapterName"
 
         # increment loop
         fileLength=$(ffprobe -i "$file" -show_format -v quiet | sed -n 's/duration=//p' | xargs printf %.3f)
@@ -535,12 +541,6 @@ chaptersFromFiles() {
         ((accumulatedLength = accumulatedLength + fileLength))
         ((chapterNumber = chapterNumber + 1))
     done
-
-    # cleanup
-    rm -rf "$prefixFile"
-    rm -rf "$tempPrefixFile"
-    rm -rf "$nameFile"
-    rm -rf "$cleanNameFile"
 }
 
 timeFromCueString() {
@@ -580,8 +580,10 @@ chaptersFromCue() {
     # https://en.wikipedia.org/wiki/Cue_sheet_(computing)
     # https://kodi.wiki/view/Cue_sheets
 
-    cueFile="$1"
-    chapterFile="$2"
+    local cueFile="$1"
+
+    # start with a fresh chapter list (kept in memory)
+    CHAPTER_LINES=()
 
     # initialize row counter
     local rowCounter=1
@@ -595,7 +597,8 @@ chaptersFromCue() {
     local title="emptyFile"
 
     # Read the input cue file
-    cat "$cueFile" | while read line; do
+    # redirect instead of a pipe so the in-memory chapter list survives the loop
+    while read line; do
 
         # initialize
         if [[ "$line" == *"TRACK"* ]]; then
@@ -632,11 +635,12 @@ chaptersFromCue() {
             ("$title" != *"emptyFile"* && "$chapterCounter" -le 1)) &&
             "$start" -ge 1 ]]; then
 
-            title=$(cleanNamesIndividually "$title")
+            cleanNamesIndividually "$title"
+            title="$RET_NAME"
 
             # print
-            timeRow "$chapterFile" "$chapterCounter" "$startTime"
-            nameRow "$chapterFile" "$chapterCounter" "$title"
+            timeRow "$chapterCounter" "$startTime"
+            nameRow "$chapterCounter" "$title"
 
             # reinitialize chapter info
             startTime=0
@@ -648,7 +652,7 @@ chaptersFromCue() {
 
         # increment row
         rowCounter=$((rowCounter + 1))
-    done
+    done < "$cueFile"
 }
 
 embedChapters() {
@@ -665,14 +669,20 @@ embedChapters() {
     # detour over mka for embedding chapters
     # but only if there is more than one chapter
     # TODO : directly with mutagen
-    if [[ $(wc -l <"$chapterFile") -ge 4 ]]; then
+    if [[ ${#CHAPTER_LINES[@]} -ge 4 ]]; then
+        # mkvmerge needs a seekable chapters file, so serialize the in-memory
+        # list to a RAM-backed temporary file (removed right after the call)
+        local chapterTemp
+        chapterTemp=$(mktemp --tmpdir=/dev/shm 2>/dev/null || mktemp)
+        printf "%s\n" "${CHAPTER_LINES[@]}" >"$chapterTemp"
         if [[ -f "$opusFile" ]]; then
-            mkvmerge "$opusFile" --chapters "$chapterFile" -o "$mkaFile" || true
+            mkvmerge "$opusFile" --chapters "$chapterTemp" -o "$mkaFile" || true
         elif [[ -f "$mp3File" ]]; then
-            mkvmerge "$mp3File" --chapters "$chapterFile" -o "$mkaFile" || true
+            mkvmerge "$mp3File" --chapters "$chapterTemp" -o "$mkaFile" || true
         elif [[ -f "$m4bFile" ]]; then
-            mkvmerge "$m4bFile" --chapters "$chapterFile" -o "$mkaFile" || true
+            mkvmerge "$m4bFile" --chapters "$chapterTemp" -o "$mkaFile" || true
         fi
+        rm -rf "$chapterTemp"
     else
         if [[ -f "$opusFile" ]]; then
             mkvmerge "$opusFile" -o "$mkaFile" || true
@@ -855,20 +865,20 @@ mainFunction() {
         pretreatInput "$d"
     done
 
-    # determine output filenames
-    local inputPathsFile="$outputDir/input.path"
-    local outputPathsFile="$outputDir/output.path"
-    nameOutputFiles "$inputDir" "$inputPathsFile" "$outputPathsFile"
+    # determine output filenames (populates the in-memory INPUT_PATHS and OUTPUT_PATHS)
+    nameOutputFiles "$inputDir"
 
     # main loop to make one output file per input subfolder
     cd "$inputDir"
-    outputFileNumber=1
-    cat "$inputPathsFile" | while read inputPath; do
-        # TODO : why is it needed to overwrite the inputPath variable again?
-        inputPath=$(cat "$inputPathsFile" | head -"$outputFileNumber" | tail -1)
-        outputPath=$(cat "$outputPathsFile" | head -"$outputFileNumber" | tail -1)
-        listFile="${outputPath%/}.ls"
+    local i
+    for (( i=0; i<${#INPUT_PATHS[@]}; i++ )); do
+        inputPath="${INPUT_PATHS[i]}"
+        outputPath="${OUTPUT_PATHS[i]}"
         chapterFile="${outputPath%/}.ch"
+
+        # start each subfolder with fresh in-memory lists
+        CONCAT_LIST=()
+        CHAPTER_LINES=()
 
         mp3Files=($(find "$inputPath" -type f -name "*.mp3" -printf x | wc -c))
         opusFiles=($(find "$inputPath" -type f -name "*.opus" -printf x | wc -c))
@@ -878,13 +888,13 @@ mainFunction() {
 
         # concat
         if  ([[ $mp3Files -gt 0 && $opusFiles -eq 0 && $m4aFiles -eq 0 ]]); then
-            concatMp3 "$inputPath" "$outputPath" "$listFile"
+            concatMp3 "$inputPath" "$outputPath"
             concatDone=1
         elif ([[ $mp3Files -eq 0 && $opusFiles -gt 0 && $m4aFiles -eq 0 ]]); then
-            concatOpus "$inputPath" "$outputPath" "$listFile"
+            concatOpus "$inputPath" "$outputPath"
             concatDone=1
         elif ([[ $mp3Files -eq 0 && $opusFiles -eq 0 && $m4aFiles -gt 0 ]]); then
-            concatM4a "$inputPath" "$outputPath" "$listFile"
+            concatM4a "$inputPath" "$outputPath"
             concatDone=1
         fi
 
@@ -900,28 +910,21 @@ mainFunction() {
                 # take the chapters from any cue sheet in the folder
                 # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
-                chaptersFromCue "$cueFile" "$chapterFile"
+                chaptersFromCue "$cueFile"
                 chaptersNeeded=1
             elif [[ $audioFiles -ge 2 ]]; then
                 # else the audio files are the chapters
-                chaptersFromFiles "$listFile" "$chapterFile"
-                rm -rf "$listFile"
+                chaptersFromFiles
                 chaptersNeeded=1
             fi
 
             # make pretty
             if [[ $chaptersNeeded == 1 ]]; then
                 embedChapters "$chapterFile"
-                rm -rf "$chapterFile"
             fi
             embedThumbnail "$inputPath" "$outputPath"
         fi
-
-        ((outputFileNumber = outputFileNumber + 1))
     done
-
-    rm -rf "$inputPathsFile"
-    rm -rf "$outputPathsFile"
 }
 
 ########
