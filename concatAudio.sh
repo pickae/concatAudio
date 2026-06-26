@@ -352,7 +352,8 @@ concatM4a() {
     local inputFolder="$1"
     local fileBaseName="$2"
     local outputFile="$fileBaseName.m4b"
-    local tempAAC="$fileBaseName.aac"
+    # intermediary concat file kept in RAM, not on the SSD
+    local tempAAC="$ramDir/$(basename -- "$fileBaseName").aac"
     local fileList=$(find "$inputFolder" -maxdepth 1 -type f -iname '*.aac')
 
     # concat all aac files
@@ -360,7 +361,6 @@ concatM4a() {
         # TODO : search recursively and make fileList across subsubfolders
         # TODO : natural sorting, e.g. 11 after 2
 
-        local tempAAC
         cat *.aac >>"$tempAAC"
         ffmpeg -i "$tempAAC" -acodec copy -bsf:a aac_adtstoasc "$outputFile"
         rm -rf "$tempAAC"
@@ -662,7 +662,8 @@ embedChapters() {
     local opusFile="${chapterFile%.*}.opus"
     local mp3File="${chapterFile%.*}.mp3"
     local m4bFile="${chapterFile%.*}.m4b"
-    local mkaFile="${chapterFile%.*}.mka"
+    # intermediary mka detour kept in RAM, not on the SSD
+    local mkaFile="$ramDir/$(basename -- "${chapterFile%.*}").mka"
     local title=$(basename -- "$1")
     title="${title%.*}"
 
@@ -782,8 +783,8 @@ extractThumbnail() {
 
         # take any opus file, assume they all have the thumbnail embedded
         if [[ ${#sourceOpus} -ge 1 ]]; then
-            # detour over mka for extractability
-            local tempFile="$outputDir/${sourceOpus##*/}"
+            # detour over mka for extractability, kept in RAM
+            local tempFile="$ramDir/${sourceOpus##*/}"
             tempFile="${tempFile%.*}.mka"
             mkvmerge -o "$tempFile" --no-chapters "$sourceOpus"
             mkvextract "$tempFile" attachments 1:"$fileName.jpg" || true
@@ -804,20 +805,22 @@ embedThumbnail() {
     local opusFile="$fileName.opus"
     local mp3File="$fileName.mp3"
     local m4bFile="$fileName.m4b"
-    local m4bTempFile="$fileName.temp.m4b"
+    # RAM-backed scratch base for the intermediary thumbnail and audio temp files
+    local ramBase="$ramDir/$(basename -- "$fileName")"
+    local m4bTempFile="$ramBase.temp.m4b"
 
     # choose thumbnail from image file
     local thumbFile=$(chooseThumbnail "$inputPath" "$fileName")
 
     # or extract from pdf file or audio file themselves, if nothing was found till now
     if [[ ! -f "$thumbFile" ]]; then
-        extractThumbnail "$inputPath" "$fileName"
-        local thumbFile="$fileName.jpg"
+        extractThumbnail "$inputPath" "$ramBase"
+        local thumbFile="$ramBase.jpg"
     fi
 
     # rename just in case it's already in that folder (if extracted from audio file)
     # because convert cannot overwrite in place
-    local outputThumb="$outputDir/${thumbFile##*/}"
+    local outputThumb="$ramDir/${thumbFile##*/}"
     outputThumb="${outputThumb%.*}.output.jpg"
     outputThumb=${outputThumb//"//"/"/"}
 
@@ -837,7 +840,7 @@ embedThumbnail() {
             python3 "$scriptDir/mutagenScript.py" "$opusFile" "$outputThumb"
             rm -rf "$outputThumb"
         elif [[ -f "$mp3File" ]]; then
-            local mp3TempFile="${mp3File%.*}.temp.mp3"
+            local mp3TempFile="$ramBase.temp.mp3"
             ffmpeg -i "$mp3File" -i "$outputThumb" \
                 -c copy -map 0 -map 1 "$mp3TempFile"
             rm -rf "$mp3File"
@@ -937,6 +940,13 @@ if [ -d "$outputDir" ]; then
 else
     mkdir -p "$outputDir"
 fi
+
+# RAM-backed scratch directory for the bigger intermediary audio and image files
+# so they don't put write load on the SSD; only the final output files are
+# written to disk. Assumes enough RAM to hold all temporary audio files.
+ramDir="/dev/shm/concatAudio.$$"
+mkdir -p "$ramDir"
+trap 'rm -rf "$ramDir"' EXIT
 
 mainFunction "$inputDir" "$outputDir"
 
