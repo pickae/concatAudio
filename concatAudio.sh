@@ -47,15 +47,17 @@ done
 shift $((OPTIND - 1))
 
 # global variables
-export scriptDir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-export inputDir="$1"
-export outputDir="$2"
-export imageSizeLimit=700000
-export fullHD="1920x1080"
-export quadHD="2560x1440"
-export ultra4K="3840x2160"
-export dpi=300
-export jpgQualityLevel=80
+# not exported: these are only read inside this shell and its functions,
+# the external tools receive what they need as arguments, not via the environment
+scriptDir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+inputDir="$1"
+outputDir="$2"
+imageSizeLimit=700000
+fullHD="1920x1080"
+quadHD="2560x1440"
+ultra4K="3840x2160"
+dpi=300
+jpgQualityLevel=80
 XARGS() {
 	xargs -r0 "$@"
 }
@@ -98,7 +100,9 @@ pretreatInput() {
 
     # folders
     # breadth first cleanup, if multiple levels need cleanup
+    local maxDepth
     maxDepth=$(find "$inputDir" -type d -printf '%d\n' | sort -rn | head -1)
+    local depth
     for (( depth=1; depth<=$maxDepth; depth++ ))
     do
         find "$inputDir" -maxdepth "$depth" -mindepth "$depth" -type d -print |
@@ -126,7 +130,7 @@ pretreatInput() {
             local ending="${file##*.}"
             if [[ $(echo "$ending" | awk '/[A-Z]/') ]]; then
                 local newName="$fileName"."${ending,,}"
-                mv -- "$file" "$newName" | true
+                mv -- "$file" "$newName" || true
             fi
         done
 
@@ -416,8 +420,9 @@ timeRow() {
 
     # Variables
     local chapterNumber="$1"
+    local paddedChapterNumber
     printf -v paddedChapterNumber "%02d" $chapterNumber
-    length=$2
+    local length=$2
 
     # format from milliseconds to string
     local hours=$((length / 3600000))
@@ -440,6 +445,7 @@ nameRow() {
 
     # Variables
     local chapterNumber="$1"
+    local paddedChapterNumber
     printf -v paddedChapterNumber "%02d" $chapterNumber
     local chapterName="$2"
 
@@ -496,6 +502,8 @@ chaptersFromFiles() {
     local chapterNumber=1
     # initialize cumulative length
     local accumulatedLength=0
+    # loop scratch variables, kept local to this function
+    local cleanName prefix tempName chapterName fileLength
     for file in "${CONCAT_LIST[@]}"; do
         # Variables
         file=${file//"file "/}
@@ -595,6 +603,7 @@ chaptersFromCue() {
     local start=0
     # initialize chapter title
     local title="emptyFile"
+    local line
 
     # Read the input cue file
     # redirect instead of a pipe so the in-memory chapter list survives the loop
@@ -863,6 +872,7 @@ mainFunction() {
     cd "$inputDir"
 
     # minimal pretreatment of the actual inputfolder
+    local d
     for d in */; do
         [ -L "${d%/}" ] && continue
         pretreatInput "$d"
@@ -874,6 +884,9 @@ mainFunction() {
     # main loop to make one output file per input subfolder
     cd "$inputDir"
     local i
+    # loop variables, kept local to this function
+    local inputPath outputPath chapterFile cueFiles cueFile concatDone audioFiles chaptersNeeded
+    local mp3Files opusFiles m4aFiles
     for (( i=0; i<${#INPUT_PATHS[@]}; i++ )); do
         inputPath="${INPUT_PATHS[i]}"
         outputPath="${OUTPUT_PATHS[i]}"
