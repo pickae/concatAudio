@@ -901,7 +901,6 @@ mainFunction() {
                 # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
                 chaptersFromCue "$cueFile" "$chapterFile"
-                echo "now here"
                 chaptersNeeded=1
             elif [[ $audioFiles -ge 2 ]]; then
                 # else the audio files are the chapters
