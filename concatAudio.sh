@@ -184,46 +184,31 @@ cleanNamesIndividually() {
     # corner case : date plus number, the number will be kept as part of name
     # splitting the prefixes is needed to later cleanup the names across all chapters
     # and needed because certain prefixes are better not put into chapter names
-    local datePattern='([1-2][0-9][0-9][0-9][0-9][0-9][0-9][0-9])'
-    local date="${newName:0:8}"
-    local dashedNumbersPattern='([0-9][0-9][-][0-9][0-9])'
-    local dashedNumbers="${newName:0:5}"
-    local fourNumberPattern='([0-9][0-9][0-9][0-9])'
-    local fourNumbers="${newName:0:4}"
-    local threeNumberPattern='([0-9][0-9][0-9])'
-    local threeNumbers="${newName:0:3}"
-    local twoNumberPattern='([0-9][0-9])'
-    local twoNumbers="${newName:0:2}"
-    local twoNumbersBrackets="${newName:1:2}"
-    local oneNumberPattern='([0-9])'
-    local oneNumber="${newName:0:1}"
-
-    # start checking for the longest numbers
-    # work way down, otherwise it mangles the numbers
-    if [[ $date =~ $datePattern ]]; then
-        newName=${newName:8}
-        local prefix="$date"
-    elif [[ $dashedNumbers =~ $dashedNumbersPattern ]]; then
-        newName=${newName:5}
-        local prefix="$dashedNumbers"
-    elif [[ $fourNumbers =~ $fourNumberPattern ]]; then
-        newName=${newName:4}
-        local prefix="$fourNumbers"
-    elif [[ $threeNumbers =~ $threeNumberPattern ]]; then
-        newName=${newName:3}
-        local prefix="$threeNumbers"
-    elif [[ $twoNumbers =~ $twoNumberPattern ]]; then
-        newName=${newName:2}
-        local prefix="$twoNumbers"
-    elif [[ $twoNumbersBrackets =~ $twoNumberPattern ]]; then
-        newName=${newName:4}
-        local prefix="$twoNumbersBrackets"
-    elif [[ $oneNumber =~ $oneNumberPattern ]]; then
-        newName=${newName:1}
-        local prefix="$oneNumber"
-    else
-        local prefix=""
-    fi
+    #
+    # each rule is "offset length strip regex": look at the fixed-width slice
+    # newName[offset:length] and, if it matches the regex, take that slice as the
+    # prefix and drop the first "strip" characters of the name.
+    # the rules are ordered from the longest number down to the shortest, because
+    # checking the longest first avoids mangling the numbers; first match wins.
+    local prefix=""
+    local rule off len strip pat candidate
+    for rule in \
+        "0 8 8 ^[1-2][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$" \
+        "0 5 5 ^[0-9][0-9]-[0-9][0-9]$" \
+        "0 4 4 ^[0-9][0-9][0-9][0-9]$" \
+        "0 3 3 ^[0-9][0-9][0-9]$" \
+        "0 2 2 ^[0-9][0-9]$" \
+        "1 2 4 ^[0-9][0-9]$" \
+        "0 1 1 ^[0-9]$"
+    do
+        read -r off len strip pat <<< "$rule"
+        candidate="${newName:off:len}"
+        if [[ $candidate =~ $pat ]]; then
+            prefix="$candidate"
+            newName="${newName:strip}"
+            break
+        fi
+    done
 
     # remove double spaces and trailing spaces and dashes
     newName=$(echo "$newName" | xargs)
@@ -682,6 +667,18 @@ embedChapters() {
     local title=$(basename -- "$1")
     title="${title%.*}"
 
+    # pick whichever of the audio files actually exists (only one should);
+    # every step below then acts on that single file, instead of repeating the
+    # same logic once per possible extension
+    local audioFile=""
+    if [[ -f "$opusFile" ]]; then
+        audioFile="$opusFile"
+    elif [[ -f "$mp3File" ]]; then
+        audioFile="$mp3File"
+    elif [[ -f "$m4bFile" ]]; then
+        audioFile="$m4bFile"
+    fi
+
     # detour over mka for embedding chapters
     # but only if there is more than one chapter
     # TODO : directly with mutagen
@@ -691,35 +688,24 @@ embedChapters() {
         local chapterTemp
         chapterTemp=$(mktemp --tmpdir=/dev/shm 2>/dev/null || mktemp)
         printf "%s\n" "${CHAPTER_LINES[@]}" >"$chapterTemp"
-        if [[ -f "$opusFile" ]]; then
-            mkvmerge --quiet "$opusFile" --chapters "$chapterTemp" -o "$mkaFile" || true
-        elif [[ -f "$mp3File" ]]; then
-            mkvmerge --quiet "$mp3File" --chapters "$chapterTemp" -o "$mkaFile" || true
-        elif [[ -f "$m4bFile" ]]; then
-            mkvmerge --quiet "$m4bFile" --chapters "$chapterTemp" -o "$mkaFile" || true
+        if [[ -n "$audioFile" ]]; then
+            mkvmerge --quiet "$audioFile" --chapters "$chapterTemp" -o "$mkaFile" || true
         fi
         rm -rf "$chapterTemp"
-    else
-        if [[ -f "$opusFile" ]]; then
-            mkvmerge --quiet "$opusFile" -o "$mkaFile" || true
-        elif [[ -f "$mp3File" ]]; then
-            mkvmerge --quiet "$mp3File" -o "$mkaFile" || true
-        elif [[ -f "$m4bFile" ]]; then
-            mkvmerge --quiet "$m4bFile" -o "$mkaFile" || true
-        fi
+    elif [[ -n "$audioFile" ]]; then
+        mkvmerge --quiet "$audioFile" -o "$mkaFile" || true
     fi
 
     # set title
     mkvpropedit --quiet "$mkaFile" --edit info --set "title=$title" --edit track:1 --set "name=$title"
 
     # re-extract audio file from mka, now with chapters
-    if [[ -f "$opusFile" ]]; then
-        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$opusFile"
-    elif [[ -f "$mp3File" ]]; then
-        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$mp3File"
-    elif [[ -f "$m4bFile" ]]; then
-        rm -rf "$m4bFile"
-        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$m4bFile"
+    if [[ -n "$audioFile" ]]; then
+        # the m4b is overwritten in place, so clear it before re-muxing
+        if [[ "$audioFile" == "$m4bFile" ]]; then
+            rm -rf "$m4bFile"
+        fi
+        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$audioFile"
     fi
     rm -rf "$mkaFile"
 }
@@ -730,44 +716,34 @@ chooseThumbnail() {
     local inputPath="$1"
     local fileName="$2"
 
-    # first take any file in folder as potential thumbnail
-    local tempThumb=$(find "$inputPath" -type f -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif')
+    # shared image-extension predicate group used by the refinement passes
+    local imgs=( '(' -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' ')' )
+
+    # update the chosen thumbnail whenever the given find predicates match
+    # something; the passes below run in increasing order of priority, so a
+    # later match overrides an earlier one
+    _pickThumb() {
+        local match
+        match=$(find "$inputPath" -type f "$@")
+        if [[ ${#match} -ge 1 ]]; then
+            tempThumb="$match"
+        fi
+    }
+
+    # first take any image file in folder as potential thumbnail
+    local tempThumb
+    tempThumb=$(find "$inputPath" -type f -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif')
 
     # refine choice in increasing order of priority
-    local tempFile=$(find "$inputPath" -type f -iname '*back*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*folder*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*inlay*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -not -iname '*back*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*front*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempFile=$(find "$inputPath" -type f -iname '*cover*' -a -iname '*front*' \
-        -a \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.avif' \))
-    if [[ ${#tempFile} -ge 1 ]]; then
-        tempThumb="$tempFile"
-    fi
-    tempThumb=$(echo "${tempThumb}" | head -1)
+    _pickThumb -iname '*back*'   -a "${imgs[@]}"
+    _pickThumb -iname '*folder*' -a "${imgs[@]}"
+    _pickThumb -iname '*inlay*'  -a "${imgs[@]}"
+    _pickThumb -iname '*cover*'  -a -not -iname '*back*' -a "${imgs[@]}"
+    _pickThumb -iname '*front*'  -a "${imgs[@]}"
+    _pickThumb -iname '*cover*'  -a -iname '*front*'     -a "${imgs[@]}"
 
-    # return
-    echo "$tempThumb"
+    # return the highest-priority match
+    echo "$tempThumb" | head -1
 }
 
 extractThumbnail() {
