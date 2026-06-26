@@ -182,6 +182,15 @@ nameOutputFiles() {
     local dir
     for dir in "${dirList[@]}"; do
         dir=$(basename -- "$dir")
+        # audio-specific: space out chapter words so "Track01" becomes
+        # "Track 01" (and likewise "Piste01" -> "Piste 01"). this is not a
+        # fragment to remove but text to extend, and it is specific to audio,
+        # so it lives here rather than in the shared cleanNamesIndividually
+        # library. it makes the common "Track"/"Piste" prefix easy to crop
+        # collectively in the next pass; any doubled space is collapsed by the
+        # trimming inside cleanNamesIndividually.
+        dir=${dir//"Track"/"Track "}
+        dir=${dir//"Piste"/"Piste "}
         # split prefix number if available, clean the name
         cleanNamesIndividually "$dir"
         prefixes+=("$RET_PREFIX")
