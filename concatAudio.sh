@@ -71,6 +71,12 @@ CHAPTER_LINES=()
 RET_PREFIX=""
 RET_NAME=""
 
+# concise progress reporting: the noisy tool output is silenced below, so use
+# this helper to print meaningful step-by-step updates on stderr instead
+log() {
+    printf '==> %s\n' "$*" >&2
+}
+
 
 # Validate input
 if [ "$#" -lt 2 ]; then
@@ -143,7 +149,7 @@ pretreatInput() {
         while IFS= read file; do
             local outputAAC="${file%.*}.aac"
             if [[ ! -f "$outputAAC" ]]; then
-                ffmpeg -i "$file" -acodec copy "$outputAAC"
+                ffmpeg -nostdin -hide_banner -loglevel error -i "$file" -acodec copy "$outputAAC"
             fi
         done
     find "$inputDir" -type f -iname '*.jpeg' -print |
@@ -366,7 +372,7 @@ concatM4a() {
         # TODO : natural sorting, e.g. 11 after 2
 
         cat *.aac >>"$tempAAC"
-        ffmpeg -i "$tempAAC" -acodec copy -bsf:a aac_adtstoasc "$outputFile"
+        ffmpeg -nostdin -hide_banner -loglevel error -i "$tempAAC" -acodec copy -bsf:a aac_adtstoasc "$outputFile"
         rm -rf "$tempAAC"
         find "$inputFolder" -type f -name '*.aac' -delete
     fi
@@ -389,7 +395,7 @@ concatMp3() {
         readarray -t CONCAT_LIST <<< "$fileList"
 
         # feed the list to ffmpeg via process substitution (no temp file)
-        ffmpeg -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
+        ffmpeg -nostdin -hide_banner -loglevel error -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
     fi
 }
 
@@ -410,7 +416,7 @@ concatOpus() {
         readarray -t CONCAT_LIST <<< "$fileList"
 
         # feed the list to ffmpeg via process substitution (no temp file)
-        ffmpeg -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
+        ffmpeg -nostdin -hide_banner -loglevel error -safe 0 -f concat -i <(printf "%s\n" "${CONCAT_LIST[@]}") -codec copy "$outputFile"
     fi
 }
 
@@ -686,34 +692,34 @@ embedChapters() {
         chapterTemp=$(mktemp --tmpdir=/dev/shm 2>/dev/null || mktemp)
         printf "%s\n" "${CHAPTER_LINES[@]}" >"$chapterTemp"
         if [[ -f "$opusFile" ]]; then
-            mkvmerge "$opusFile" --chapters "$chapterTemp" -o "$mkaFile" || true
+            mkvmerge --quiet "$opusFile" --chapters "$chapterTemp" -o "$mkaFile" || true
         elif [[ -f "$mp3File" ]]; then
-            mkvmerge "$mp3File" --chapters "$chapterTemp" -o "$mkaFile" || true
+            mkvmerge --quiet "$mp3File" --chapters "$chapterTemp" -o "$mkaFile" || true
         elif [[ -f "$m4bFile" ]]; then
-            mkvmerge "$m4bFile" --chapters "$chapterTemp" -o "$mkaFile" || true
+            mkvmerge --quiet "$m4bFile" --chapters "$chapterTemp" -o "$mkaFile" || true
         fi
         rm -rf "$chapterTemp"
     else
         if [[ -f "$opusFile" ]]; then
-            mkvmerge "$opusFile" -o "$mkaFile" || true
+            mkvmerge --quiet "$opusFile" -o "$mkaFile" || true
         elif [[ -f "$mp3File" ]]; then
-            mkvmerge "$mp3File" -o "$mkaFile" || true
+            mkvmerge --quiet "$mp3File" -o "$mkaFile" || true
         elif [[ -f "$m4bFile" ]]; then
-            mkvmerge "$m4bFile" -o "$mkaFile" || true
+            mkvmerge --quiet "$m4bFile" -o "$mkaFile" || true
         fi
     fi
 
     # set title
-    mkvpropedit "$mkaFile" --edit info --set "title=$title" --edit track:1 --set "name=$title"
+    mkvpropedit --quiet "$mkaFile" --edit info --set "title=$title" --edit track:1 --set "name=$title"
 
     # re-extract audio file from mka, now with chapters
     if [[ -f "$opusFile" ]]; then
-        ffmpeg -y -i "$mkaFile" -codec copy "$opusFile"
+        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$opusFile"
     elif [[ -f "$mp3File" ]]; then
-        ffmpeg -y -i "$mkaFile" -codec copy "$mp3File"
+        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$mp3File"
     elif [[ -f "$m4bFile" ]]; then
         rm -rf "$m4bFile"
-        ffmpeg -y -i "$mkaFile" -codec copy "$m4bFile"
+        ffmpeg -nostdin -hide_banner -loglevel error -y -i "$mkaFile" -codec copy "$m4bFile"
     fi
     rm -rf "$mkaFile"
 }
@@ -795,12 +801,12 @@ extractThumbnail() {
             # detour over mka for extractability, kept in RAM
             local tempFile="$ramDir/${sourceOpus##*/}"
             tempFile="${tempFile%.*}.mka"
-            mkvmerge -o "$tempFile" --no-chapters "$sourceOpus"
-            mkvextract "$tempFile" attachments 1:"$fileName.jpg" || true
+            mkvmerge --quiet -o "$tempFile" --no-chapters "$sourceOpus"
+            mkvextract --quiet "$tempFile" attachments 1:"$fileName.jpg" || true
             rm -rf "$tempFile"
         # or take any mp3 file, assume they all have the thumbnail embedded
         elif [[ ${#sourceMp3} -ge 1 ]]; then
-            ffmpeg -i "$sourceMp3" -an -vcodec copy "$fileName.jpg" || true
+            ffmpeg -nostdin -hide_banner -loglevel error -i "$sourceMp3" -an -vcodec copy "$fileName.jpg" || true
         # TODO m4a
         fi
     fi
@@ -837,7 +843,7 @@ embedThumbnail() {
     if [[ -f "$thumbFile" ]]; then
         local fileSize=$(stat --format=%s "$thumbFile")
         if [[ "$fileSize" -ge "$imageSizeLimit" || "${thumbFile: -4}" != ".jpg"  ]]; then
-            convert "$thumbFile" -quality "$jpgQualityLevel" -resize "$quadHD"\> "$outputThumb"
+            convert -quiet "$thumbFile" -quality "$jpgQualityLevel" -resize "$quadHD"\> "$outputThumb"
         else
             cp "$thumbFile" "$outputThumb"
         fi
@@ -850,13 +856,13 @@ embedThumbnail() {
             rm -rf "$outputThumb"
         elif [[ -f "$mp3File" ]]; then
             local mp3TempFile="$ramBase.temp.mp3"
-            ffmpeg -i "$mp3File" -i "$outputThumb" \
+            ffmpeg -nostdin -hide_banner -loglevel error -i "$mp3File" -i "$outputThumb" \
                 -c copy -map 0 -map 1 "$mp3TempFile"
             rm -rf "$mp3File"
             rm -rf "$outputThumb"
             mv -f "$mp3TempFile" "$mp3File"
         elif [[ -f "$m4bFile" ]]; then
-            ffmpeg -i "$m4bFile" -i "$outputThumb" \
+            ffmpeg -nostdin -hide_banner -loglevel error -i "$m4bFile" -i "$outputThumb" \
                 -c copy -disposition:v:0 attached_pic "$m4bTempFile"
             rm -rf "$m4bFile"
             rm -rf "$outputThumb"
@@ -872,6 +878,7 @@ mainFunction() {
     cd "$inputDir"
 
     # minimal pretreatment of the actual inputfolder
+    log "Pretreating input folders in \"$inputDir\""
     local d
     for d in */; do
         [ -L "${d%/}" ] && continue
@@ -879,6 +886,7 @@ mainFunction() {
     done
 
     # determine output filenames (populates the in-memory INPUT_PATHS and OUTPUT_PATHS)
+    log "Determining output file names"
     nameOutputFiles "$inputDir"
 
     # main loop to make one output file per input subfolder
@@ -892,6 +900,8 @@ mainFunction() {
         outputPath="${OUTPUT_PATHS[i]}"
         chapterFile="${outputPath%/}.ch"
 
+        log "[$((i + 1))/${#INPUT_PATHS[@]}] Processing \"$(basename -- "${outputPath%/}")\""
+
         # start each subfolder with fresh in-memory lists
         CONCAT_LIST=()
         CHAPTER_LINES=()
@@ -904,12 +914,15 @@ mainFunction() {
 
         # concat
         if  ([[ $mp3Files -gt 0 && $opusFiles -eq 0 && $m4aFiles -eq 0 ]]); then
+            log "    Concatenating $mp3Files MP3 file(s)"
             concatMp3 "$inputPath" "$outputPath"
             concatDone=1
         elif ([[ $mp3Files -eq 0 && $opusFiles -gt 0 && $m4aFiles -eq 0 ]]); then
+            log "    Concatenating $opusFiles Opus file(s)"
             concatOpus "$inputPath" "$outputPath"
             concatDone=1
         elif ([[ $mp3Files -eq 0 && $opusFiles -eq 0 && $m4aFiles -gt 0 ]]); then
+            log "    Concatenating $m4aFiles AAC file(s)"
             concatM4a "$inputPath" "$outputPath"
             concatDone=1
         fi
@@ -926,18 +939,22 @@ mainFunction() {
                 # take the chapters from any cue sheet in the folder
                 # this means CD1 CD2 types of input need separate folders per CD
                 cueFile=$(echo "${cueFiles}" | head -1)
+                log "    Reading chapters from cue sheet"
                 chaptersFromCue "$cueFile"
                 chaptersNeeded=1
             elif [[ $audioFiles -ge 2 ]]; then
                 # else the audio files are the chapters
+                log "    Building chapters from individual files"
                 chaptersFromFiles
                 chaptersNeeded=1
             fi
 
             # make pretty
             if [[ $chaptersNeeded == 1 ]]; then
+                log "    Embedding chapters"
                 embedChapters "$chapterFile"
             fi
+            log "    Embedding thumbnail"
             embedThumbnail "$inputPath" "$outputPath"
         fi
     done
@@ -964,6 +981,9 @@ trap 'rm -rf "$ramDir"' EXIT
 mainFunction "$inputDir" "$outputDir"
 
 # Cleanup
+log "Cleaning up temporary files"
 find "$outputDir" -type f -name '*.ls' -delete
 find "$outputDir" -type f -name '*.jpg' -delete
 find "$outputDir" -type d -empty -delete
+
+log "Done. Output written to \"$outputDir\""
